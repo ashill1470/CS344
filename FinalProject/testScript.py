@@ -12,8 +12,6 @@ from torch import autocast
 from torchvision import transforms as tfms
 from tqdm.auto import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer, logging
-from PIL import Image
-import gc
 
 
 
@@ -28,9 +26,6 @@ torch_device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def loadModel():
-    gc.collect()
-    torch.cuda.empty_cache()
-    torch.cuda.synchronize()
     vae = AutoencoderKL.from_pretrained("CompVis/stable-diffusion-v1-4", subfolder="vae")
 
         # Load the tokenizer and text encoder to tokenize and encode the text. 
@@ -50,26 +45,26 @@ def loadModel():
     return vae, tokenizer, text_encoder, unet, scheduler 
 
 def createLatents(someArray, batch_size, height, width, scheduler, unet):
-    generator = torch.manual_seed(sum(someArray))
+    seed = int(sum(someArray))
+    generator = torch.manual_seed(seed) 
     latents = torch.randn(
     (batch_size, unet.in_channels, height // 8, width // 8),
     generator=generator,
     )
     latents = latents.to(torch_device)
     latents = latents * scheduler.init_noise_sigma # Scaling (previous versions did latents = latents * self.scheduler.sigmas[0]
-    print(latents)
     return latents
     
 
 def generateImage(userPrompt):
     vae, tokenizer, text_encoder, unet, scheduler = loadModel()
-    print(torch.cuda.memory_summary(device=None, abbreviated=False))
+    
     prompt = userPrompt
     height = 512                        # default height of Stable Diffusion
     width = 512                         # default width of Stable Diffusion
     num_inference_steps = 30            # Number of denoising steps
     guidance_scale = 7.5                # Scale for classifier-free guidance 7.5
-    generator = torch.manual_seed(30)   # Seed generator to create the inital latent noise
+    #generator = torch.manual_seed(30)   # Seed generator to create the inital latent noise
     batch_size = 1
 
     # Prep text 
@@ -90,19 +85,12 @@ def generateImage(userPrompt):
     # Prep latents
     latentArray = [1, 5, 4, 7]
     latents = createLatents(latentArray, batch_size, height, width, scheduler, unet)
-    latents = torch.randn(
-    (batch_size, unet.in_channels, height // 8, width // 8),
-    generator=generator,
-    )
-    latents = latents.to(torch_device)
-    latents = latents * scheduler.init_noise_sigma # Scaling (previous versions did latents = latents * self.scheduler.sigmas[0]
-    print(latents)
 
     # Loop
     with autocast("cuda"):
         for i, t in tqdm(enumerate(scheduler.timesteps)):
             # expand the latents if we are doing classifier-free guidance to avoid doing two forward passes.
-            latent_model_input = torch.cat(latents * 2)
+            latent_model_input = torch.cat([latents] * 2)
             sigma = scheduler.sigmas[i]
             # Scale the latents (preconditioning):
             # latent_model_input = latent_model_input / ((sigma**2 + 1) ** 0.5) # Diffusers 0.3 and below
@@ -135,8 +123,7 @@ def generateImage(userPrompt):
 
 
 def main():
-    torch.cuda.empty_cache()
-    generateImage('Donald Trump riding a horse into battle')
+    generateImage('Astronaut on Mars')
     
 
 main()
