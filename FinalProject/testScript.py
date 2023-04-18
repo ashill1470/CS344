@@ -45,8 +45,7 @@ def loadModel():
     return vae, tokenizer, text_encoder, unet, scheduler 
 
 def createLatents(someArray, batch_size, height, width, scheduler, unet):
-    seed = int(sum(someArray))
-    generator = torch.manual_seed(seed) 
+    generator = torch.manual_seed(sum(someArray)) 
     latents = torch.randn(
     (batch_size, unet.in_channels, height // 8, width // 8),
     generator=generator,
