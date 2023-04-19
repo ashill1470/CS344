@@ -2,6 +2,7 @@ import numpy
 import torch
 from diffusers import AutoencoderKL, LMSDiscreteScheduler, UNet2DConditionModel
 import huggingface_hub
+import streamlit as st
 
 # For video display:
 from IPython.display import HTML
@@ -16,7 +17,7 @@ from transformers import CLIPTextModel, CLIPTokenizer, logging
 
 
 torch.manual_seed(1)
-if not Path(huggingface_hub.constants.HF_TOKEN_PATH).exists(): huggingface_hub.notebook_login()
+# if not Path(huggingface_hub.constants.HF_TOKEN_PATH).exists(): huggingface_hub.notebook_login()
 
 # Supress some unnecessary warnings when loading the CLIPTextModel
 logging.set_verbosity_error()
@@ -25,6 +26,7 @@ logging.set_verbosity_error()
 torch_device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
+@st.cache_resources
 def loadModel():
     vae = AutoencoderKL.from_pretrained("CompVis/stable-diffusion-v1-4", subfolder="vae")
 
@@ -44,6 +46,7 @@ def loadModel():
     unet = unet.to(torch_device);
     return vae, tokenizer, text_encoder, unet, scheduler 
 
+@st.cache_data
 def createLatents(someArray, batch_size, height, width, scheduler, unet):
     generator = torch.manual_seed(sum(someArray)) 
     latents = torch.randn(
@@ -82,7 +85,7 @@ def generateImage(userPrompt):
     scheduler.set_timesteps(num_inference_steps)
 
     # Prep latents
-    latentArray = [1, 5, 4, 7]
+    latentArray = [7, 5, 4, 7]
     latents = createLatents(latentArray, batch_size, height, width, scheduler, unet)
 
     # Loop
@@ -117,12 +120,14 @@ def generateImage(userPrompt):
     image = image.detach().cpu().permute(0, 2, 3, 1).numpy()
     images = (image * 255).round().astype("uint8")
     pil_images = [Image.fromarray(image) for image in images]
-    pil_images[0]
-    pil_images[0].show()
-
+    image = pil_images[0].convert('RGB')
+    
+    st.image(image)
+    del vae, tokenizer, text_encoder, unet, scheduler
 
 def main():
-    generateImage('Astronaut on Mars')
+    userInput = st.text_input("Enter your prompt")
+    generateImage('oil painting of astronaut')
     
 
 main()
