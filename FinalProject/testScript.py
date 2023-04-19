@@ -1,3 +1,4 @@
+import math
 import numpy
 import torch
 from diffusers import AutoencoderKL, LMSDiscreteScheduler, UNet2DConditionModel
@@ -15,7 +16,6 @@ from tqdm.auto import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer, logging
 
 
-
 torch.manual_seed(1)
 # if not Path(huggingface_hub.constants.HF_TOKEN_PATH).exists(): huggingface_hub.notebook_login()
 
@@ -26,67 +26,96 @@ logging.set_verbosity_error()
 torch_device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-@st.cache_resources
+@st.cache_resource
 def loadModel():
-    vae = AutoencoderKL.from_pretrained("CompVis/stable-diffusion-v1-4", subfolder="vae")
+    vae = AutoencoderKL.from_pretrained(
+        "CompVis/stable-diffusion-v1-4", subfolder="vae")
 
-        # Load the tokenizer and text encoder to tokenize and encode the text. 
+    # Load the tokenizer and text encoder to tokenize and encode the text.
     tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-    text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14")
+    text_encoder = CLIPTextModel.from_pretrained(
+        "openai/clip-vit-large-patch14")
 
-        # The UNet model for generating the latents.
-    unet = UNet2DConditionModel.from_pretrained("CompVis/stable-diffusion-v1-4", subfolder="unet")
+    # The UNet model for generating the latents.
+    unet = UNet2DConditionModel.from_pretrained(
+        "CompVis/stable-diffusion-v1-4", subfolder="unet")
 
-        # The noise scheduler
-    scheduler = LMSDiscreteScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000)
+    # The noise scheduler
+    scheduler = LMSDiscreteScheduler(
+        beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000)
 
-        # To the GPU we go!
+    # To the GPU we go!
     vae = vae.to(torch_device)
     text_encoder = text_encoder.to(torch_device)
-    unet = unet.to(torch_device);
-    return vae, tokenizer, text_encoder, unet, scheduler 
+    unet = unet.to(torch_device)
+    return vae, tokenizer, text_encoder, unet, scheduler
+
 
 @st.cache_data
-def createLatents(someArray, batch_size, height, width, scheduler, unet):
-    generator = torch.manual_seed(sum(someArray)) 
+def createLatents(seed, batch_size, height, width, _scheduler, _unet):
+    generator = torch.manual_seed(seed)
     latents = torch.randn(
-    (batch_size, unet.in_channels, height // 8, width // 8),
-    generator=generator,
+        (batch_size, _unet.in_channels, height // 8, width // 8),
+        generator=generator,
     )
-    latents = latents.to(torch_device)
-    latents = latents * scheduler.init_noise_sigma # Scaling (previous versions did latents = latents * self.scheduler.sigmas[0]
+    # latents = latents.to(torch_device)
+    # Scaling (previous versions did latents = latents * self.scheduler.sigmas[0]
+    latents = latents * _scheduler.init_noise_sigma
     return latents
-    
+
+
+def softmax(x):
+    sum = 0
+    for i in x:
+        i = math.pow(math.e, i)
+        sum += i
+    for i in x:
+        i /= sum
+    return x
+
 
 def generateImage(userPrompt):
     vae, tokenizer, text_encoder, unet, scheduler = loadModel()
-    
+
     prompt = userPrompt
     height = 512                        # default height of Stable Diffusion
     width = 512                         # default width of Stable Diffusion
     num_inference_steps = 30            # Number of denoising steps
     guidance_scale = 7.5                # Scale for classifier-free guidance 7.5
-    #generator = torch.manual_seed(30)   # Seed generator to create the inital latent noise
+    # generator = torch.manual_seed(30)   # Seed generator to create the inital latent noise
     batch_size = 1
 
-    # Prep text 
-    text_input = tokenizer(prompt, padding="max_length", max_length=tokenizer.model_max_length, truncation=True, return_tensors="pt")
+    # Prep text
+    text_input = tokenizer(prompt, padding="max_length",
+                           max_length=tokenizer.model_max_length, truncation=True, return_tensors="pt")
     with torch.no_grad():
-        text_embeddings = text_encoder(text_input.input_ids.to(torch_device))[0]
+        text_embeddings = text_encoder(
+            text_input.input_ids.to(torch_device))[0]
     max_length = text_input.input_ids.shape[-1]
     uncond_input = tokenizer(
         [""] * batch_size, padding="max_length", max_length=max_length, return_tensors="pt"
     )
     with torch.no_grad():
-        uncond_embeddings = text_encoder(uncond_input.input_ids.to(torch_device))[0] 
+        uncond_embeddings = text_encoder(
+            uncond_input.input_ids.to(torch_device))[0]
     text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
 
     # Prep Scheduler
     scheduler.set_timesteps(num_inference_steps)
 
     # Prep latents
-    latentArray = [7, 5, 4, 7]
-    latents = createLatents(latentArray, batch_size, height, width, scheduler, unet)
+    weightsArray = [0, 0, 0, 0]
+    latent1 = createLatents(32, batch_size, height, width, scheduler, unet)
+    latent2 = createLatents(64, batch_size, height, width, scheduler, unet)
+    latent3 = createLatents(128, batch_size, height, width, scheduler, unet)
+    latent4 = createLatents(256, batch_size, height, width, scheduler, unet)
+    # latentsArray = [latent1, latent2, latent3, latent4]
+    # weightsArray = softmax(weightsArray)
+    # latents = torch.zeros(
+    #     (batch_size, unet.in_channels, height // 8, width // 8))
+    # for i in range(0, 4):
+    #     latents += weightsArray[i]*latentsArray[i]
+    latents.to(torch_device)
 
     # Loop
     with autocast("cuda"):
@@ -96,15 +125,18 @@ def generateImage(userPrompt):
             sigma = scheduler.sigmas[i]
             # Scale the latents (preconditioning):
             # latent_model_input = latent_model_input / ((sigma**2 + 1) ** 0.5) # Diffusers 0.3 and below
-            latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+            latent_model_input = scheduler.scale_model_input(
+                latent_model_input, t)
 
             # predict the noise residual
             with torch.no_grad():
-                noise_pred = unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
+                noise_pred = unet(latent_model_input, t,
+                                  encoder_hidden_states=text_embeddings).sample
 
             # perform guidance
             noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+            noise_pred = noise_pred_uncond + guidance_scale * \
+                (noise_pred_text - noise_pred_uncond)
 
             # compute the previous noisy sample x_t -> x_t-1
             # latents = scheduler.step(noise_pred, i, latents)["prev_sample"] # Diffusers 0.3 and below
@@ -121,13 +153,14 @@ def generateImage(userPrompt):
     images = (image * 255).round().astype("uint8")
     pil_images = [Image.fromarray(image) for image in images]
     image = pil_images[0].convert('RGB')
-    
+
     st.image(image)
     del vae, tokenizer, text_encoder, unet, scheduler
+
 
 def main():
     userInput = st.text_input("Enter your prompt")
     generateImage('oil painting of astronaut')
-    
+
 
 main()
