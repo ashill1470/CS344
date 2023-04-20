@@ -4,6 +4,7 @@ import torch
 from diffusers import AutoencoderKL, LMSDiscreteScheduler, UNet2DConditionModel
 import huggingface_hub
 import streamlit as st
+import random
 
 # For video display:
 from IPython.display import HTML
@@ -23,6 +24,7 @@ torch.manual_seed(1)
 logging.set_verbosity_error()
 
 # Set device
+# torch_device = "cpu"
 torch_device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -66,15 +68,15 @@ def createLatents(seed, batch_size, height, width, _scheduler, _unet):
 
 def softmax(x):
     sum = 0
-    for i in x:
-        i = math.pow(math.e, i)
-        sum += i
-    for i in x:
-        i /= sum
+    for i in range(0, 4):
+        x[i] = math.pow(math.e, x[i])
+        sum += x[i]
+    for i in range(0, 4):
+        x[i] /= sum
     return x
 
 
-def generateImage(userPrompt):
+def generateImage(userPrompt, weights):
     vae, tokenizer, text_encoder, unet, scheduler = loadModel()
 
     prompt = userPrompt
@@ -104,63 +106,82 @@ def generateImage(userPrompt):
     scheduler.set_timesteps(num_inference_steps)
 
     # Prep latents
-    weightsArray = [0, 0, 0, 0]
+    weightsArray = weights
+    randomNum = random.random()
     latent1 = createLatents(32, batch_size, height, width, scheduler, unet)
     latent2 = createLatents(64, batch_size, height, width, scheduler, unet)
     latent3 = createLatents(128, batch_size, height, width, scheduler, unet)
     latent4 = createLatents(256, batch_size, height, width, scheduler, unet)
-    # latentsArray = [latent1, latent2, latent3, latent4]
-    # weightsArray = softmax(weightsArray)
-    # latents = torch.zeros(
-    #     (batch_size, unet.in_channels, height // 8, width // 8))
-    # for i in range(0, 4):
-    #     latents += weightsArray[i]*latentsArray[i]
-    latents.to(torch_device)
-
+    latentsArray = [latent1, latent2, latent3, latent4]
+    newWeightsArray = [[], [], [], []]
+    for i in range(0, 4):
+        tempArray = weightsArray
+        tempArray[i] += randomNum
+        newWeightsArray[i] = softmax(tempArray)
+    latents = [torch.zeros(
+        (batch_size, unet.in_channels, height // 8, width // 8)), torch.zeros(
+        (batch_size, unet.in_channels, height // 8, width // 8)), torch.zeros(
+        (batch_size, unet.in_channels, height // 8, width // 8)), torch.zeros(
+        (batch_size, unet.in_channels, height // 8, width // 8))]
+    for i in range(0, 4):
+        for j in range(0, 4):
+            latents[i] += newWeightsArray[i][j]*latentsArray[i]
+        latents[i] = latents[i].to(torch_device)
     # Loop
     with autocast("cuda"):
-        for i, t in tqdm(enumerate(scheduler.timesteps)):
-            # expand the latents if we are doing classifier-free guidance to avoid doing two forward passes.
-            latent_model_input = torch.cat([latents] * 2)
-            sigma = scheduler.sigmas[i]
-            # Scale the latents (preconditioning):
-            # latent_model_input = latent_model_input / ((sigma**2 + 1) ** 0.5) # Diffusers 0.3 and below
-            latent_model_input = scheduler.scale_model_input(
-                latent_model_input, t)
+        for j in range(0, 4):
+            for i, t in tqdm(enumerate(scheduler.timesteps)):
+                # expand the latents if we are doing classifier-free guidance to avoid doing two forward passes.
 
-            # predict the noise residual
-            with torch.no_grad():
-                noise_pred = unet(latent_model_input, t,
-                                  encoder_hidden_states=text_embeddings).sample
+                latent_model_input = torch.cat([latents[j]] * 2)
+                sigma = scheduler.sigmas[i]
+                # Scale the latents (preconditioning):
+                # latent_model_input = latent_model_input / ((sigma**2 + 1) ** 0.5) # Diffusers 0.3 and below
+                latent_model_input = scheduler.scale_model_input(
+                    latent_model_input, t)
+                latent_model_input = latent_model_input.to(torch_device)
 
-            # perform guidance
-            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-            noise_pred = noise_pred_uncond + guidance_scale * \
-                (noise_pred_text - noise_pred_uncond)
+                # predict the noise residual
+                with torch.no_grad():
+                    noise_pred = unet(latent_model_input, t,
+                                      encoder_hidden_states=text_embeddings).sample
 
-            # compute the previous noisy sample x_t -> x_t-1
-            # latents = scheduler.step(noise_pred, i, latents)["prev_sample"] # Diffusers 0.3 and below
-            latents = scheduler.step(noise_pred, t, latents).prev_sample
+                # perform guidance
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + guidance_scale * \
+                    (noise_pred_text - noise_pred_uncond)
+
+                # compute the previous noisy sample x_t -> x_t-1
+                # latents = scheduler.step(noise_pred, i, latents)["prev_sample"] # Diffusers 0.3 and below
+
+                latents[j] = scheduler.step(
+                    noise_pred, t, latents[j]).prev_sample
 
     # scale and decode the image latents with vae
-    latents = 1 / 0.18215 * latents
-    with torch.no_grad():
-        image = vae.decode(latents).sample
+    for i in range(0, 4):
+        latents[i] = 1 / 0.18215 * latents[i]
+        with torch.no_grad():
+            image = vae.decode(latents[i]).sample
 
-    # Display
-    image = (image / 2 + 0.5).clamp(0, 1)
-    image = image.detach().cpu().permute(0, 2, 3, 1).numpy()
-    images = (image * 255).round().astype("uint8")
-    pil_images = [Image.fromarray(image) for image in images]
-    image = pil_images[0].convert('RGB')
+        # Display
+        image = (image / 2 + 0.5).clamp(0, 1)
+        image = image.detach().cpu().permute(0, 2, 3, 1).numpy()
+        images = (image * 255).round().astype("uint8")
+        pil_images = [Image.fromarray(image) for image in images]
+        image = pil_images[0].convert('RGB')
 
-    st.image(image)
+        st.image(image)
+        if(st.button("Select Image " + str(i))):
+            weightsArray[i] += randomNum
+            generateImage(userPrompt, weightsArray)
+
     del vae, tokenizer, text_encoder, unet, scheduler
 
 
 def main():
     userInput = st.text_input("Enter your prompt")
-    generateImage('oil painting of astronaut')
+    if(st.button("sumbit prompt")):
+        generateImage(userInput, [0, 0, 0, 0])
 
 
 main()
