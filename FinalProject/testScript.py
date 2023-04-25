@@ -24,7 +24,6 @@ torch.manual_seed(1)
 logging.set_verbosity_error()
 
 # Set device
-# torch_device = "cpu"
 torch_device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -60,7 +59,6 @@ def createLatents(seed, batch_size, height, width, _scheduler, _unet):
         (batch_size, _unet.in_channels, height // 8, width // 8),
         generator=generator,
     )
-    # latents = latents.to(torch_device)
     # Scaling (previous versions did latents = latents * self.scheduler.sigmas[0]
     latents = latents * _scheduler.init_noise_sigma
     return latents
@@ -84,7 +82,6 @@ def generateImage(userPrompt, weights):
     width = 512                         # default width of Stable Diffusion
     num_inference_steps = 30            # Number of denoising steps
     guidance_scale = 7.5                # Scale for classifier-free guidance 7.5
-    # generator = torch.manual_seed(30)   # Seed generator to create the inital latent noise
     batch_size = 1
 
     # Prep text
@@ -115,9 +112,12 @@ def generateImage(userPrompt, weights):
     latentsArray = [latent1, latent2, latent3, latent4]
     newWeightsArray = [[], [], [], []]
     for i in range(0, 4):
-        tempArray = weightsArray
+        tempArray = [0, 0, 0, 0]
+        for j in range(0, 4):
+            tempArray[j] = weightsArray[j]
         tempArray[i] += randomNum
         newWeightsArray[i] = softmax(tempArray)
+
     latents = [torch.zeros(
         (batch_size, unet.in_channels, height // 8, width // 8)), torch.zeros(
         (batch_size, unet.in_channels, height // 8, width // 8)), torch.zeros(
@@ -125,13 +125,14 @@ def generateImage(userPrompt, weights):
         (batch_size, unet.in_channels, height // 8, width // 8))]
     for i in range(0, 4):
         for j in range(0, 4):
-            latents[i] += newWeightsArray[i][j]*latentsArray[i]
+            latents[i] = torch.add(
+                latents[i], latentsArray[j], alpha=newWeightsArray[i][j])
         latents[i] = latents[i].to(torch_device)
     # Loop
     with autocast("cuda"):
-        for j in range(0, 4):
+        for j in range(0, 1):
             for i, t in tqdm(enumerate(scheduler.timesteps)):
-                # expand the latents if we are doing classifier-free guidance to avoid doing two forward passes.
+                # expand the latents if we are doing classifier-free guidance to avoid doing two forward passes
 
                 latent_model_input = torch.cat([latents[j]] * 2)
                 sigma = scheduler.sigmas[i]
@@ -156,12 +157,24 @@ def generateImage(userPrompt, weights):
 
                 latents[j] = scheduler.step(
                     noise_pred, t, latents[j]).prev_sample
+                
+                sample = 1 / 0.18215 * latents[j]
+                with torch.no_grad():
+                    image = vae.decode(sample).sample
+
+                image = (image / 2 + 0.5).clamp(0, 1)
+                image = image.detach().cpu().permute(0, 2, 3, 1).numpy()
+                images = (image * 255).round().astype("uint8")
+                pil_images = [Image.fromarray(image) for image in images]
+                image = pil_images[0].convert('RGB')
+
+                st.image(image)
 
     # scale and decode the image latents with vae
-    for i in range(0, 4):
-        latents[i] = 1 / 0.18215 * latents[i]
+    for j in range(0, 4):
+        latents[j] = 1 / 0.18215 * latents[j]
         with torch.no_grad():
-            image = vae.decode(latents[i]).sample
+            image = vae.decode(latents[j]).sample
 
         # Display
         image = (image / 2 + 0.5).clamp(0, 1)
@@ -171,9 +184,9 @@ def generateImage(userPrompt, weights):
         image = pil_images[0].convert('RGB')
 
         st.image(image)
-        if(st.button("Select Image " + str(i))):
-            weightsArray[i] += randomNum
-            generateImage(userPrompt, weightsArray)
+        if(st.button("Select Image " + str(j))):
+           weightsArray[i] += randomNum
+           generateImage(userPrompt, weightsArray)
 
     del vae, tokenizer, text_encoder, unet, scheduler
 
