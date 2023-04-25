@@ -26,7 +26,6 @@ logging.set_verbosity_error()
 # Set device
 torch_device = "cuda" if torch.cuda.is_available() else "cpu"
 
-
 @st.cache_resource
 def loadModel():
     vae = AutoencoderKL.from_pretrained(
@@ -52,7 +51,7 @@ def loadModel():
     return vae, tokenizer, text_encoder, unet, scheduler
 
 
-@st.cache_data
+# @st.cache_data
 def createLatents(seed, batch_size, height, width, _scheduler, _unet):
     generator = torch.manual_seed(seed)
     latents = torch.randn(
@@ -60,14 +59,14 @@ def createLatents(seed, batch_size, height, width, _scheduler, _unet):
         generator=generator,
     )
     # Scaling (previous versions did latents = latents * self.scheduler.sigmas[0]
-    latents = latents * _scheduler.init_noise_sigma
+    # latents = latents * _scheduler.init_noise_sigma
     return latents
 
 
 def softmax(x):
     sum = 0
     for i in range(0, 4):
-        x[i] = math.pow(math.e, x[i])
+        x[i] = math.pow(2, x[i])
         sum += x[i]
     for i in range(0, 4):
         x[i] /= sum
@@ -76,6 +75,8 @@ def softmax(x):
 
 def generateImage(userPrompt, weights):
     vae, tokenizer, text_encoder, unet, scheduler = loadModel()
+
+    st.write(weights)
 
     prompt = userPrompt
     height = 512                        # default height of Stable Diffusion
@@ -104,33 +105,50 @@ def generateImage(userPrompt, weights):
 
     # Prep latents
     weightsArray = weights
-    randomNum = random.random()
-    latent1 = createLatents(32, batch_size, height, width, scheduler, unet)
-    latent2 = createLatents(64, batch_size, height, width, scheduler, unet)
-    latent3 = createLatents(128, batch_size, height, width, scheduler, unet)
-    latent4 = createLatents(256, batch_size, height, width, scheduler, unet)
-    latentsArray = [latent1, latent2, latent3, latent4]
-    newWeightsArray = [[], [], [], []]
-    for i in range(0, 4):
-        tempArray = [0, 0, 0, 0]
-        for j in range(0, 4):
-            tempArray[j] = weightsArray[j]
-        tempArray[i] += randomNum
-        newWeightsArray[i] = softmax(tempArray)
+    randomNum = random.random() / 5 + 0.20
+    latentsArray = [createLatents(math.pow(2,5 + i), batch_size, height, width, scheduler, unet) for i in range(4)]
+    
+    newWeights = torch.tensor([weights[0]+randomNum, weights[1], weights[2], weights[3]])
+    newWeights /= torch.linalg.norm(newWeights)
 
-    latents = [torch.zeros(
-        (batch_size, unet.in_channels, height // 8, width // 8)), torch.zeros(
-        (batch_size, unet.in_channels, height // 8, width // 8)), torch.zeros(
-        (batch_size, unet.in_channels, height // 8, width // 8)), torch.zeros(
-        (batch_size, unet.in_channels, height // 8, width // 8))]
-    for i in range(0, 4):
-        for j in range(0, 4):
-            latents[i] = torch.add(
-                latents[i], latentsArray[j], alpha=newWeightsArray[i][j])
+    
+
+    newWeights1 = torch.tensor([weights[0], weights[1]+randomNum, weights[2], weights[3]])
+    newWeights1 /= torch.linalg.norm(newWeights1)
+
+    newWeights2 = torch.tensor([weights[0], weights[1], weights[2]+randomNum, weights[3]])
+    newWeights2 /= torch.linalg.norm(newWeights2)
+
+    newWeights3 = torch.tensor([weights[0], weights[1], weights[2], weights[3]+randomNum])
+    newWeights3 /= torch.linalg.norm(newWeights3)
+
+    newWeightsArray = [newWeights, newWeights1, newWeights2, newWeights3]
+
+    newWeightsAsList = [weights[0]+randomNum, weights[1], weights[2], weights[3]]
+    newWeightsAsList1 = [weights[0], weights[1]+randomNum, weights[2], weights[3]]
+    newWeightsAsList2 = [weights[0], weights[1], weights[2]+randomNum, weights[3]]
+    newWeightsAsList3 = [weights[0], weights[1], weights[2], weights[3]+randomNum]
+
+    newWeightsLists = [newWeightsAsList, newWeightsAsList1, newWeightsAsList2, newWeightsAsList3]
+
+    latents = [0, 0, 0, 0]
+    for i in range(0,4):
+        latents[i] = torch.einsum(
+            'a,abchw->bchw',
+            newWeightsArray[i],
+            torch.stack(latentsArray)
+        )
         latents[i] = latents[i].to(torch_device)
+        latents[i] *= scheduler.init_noise_sigma
+    # for i in range(0, 4):
+    #     for j in range(0, 4):
+    #         torch.add(latents[i], latentsArray[j], alpha=weightsArray[i][j], out=latents[i])
+    #     latents[i] = latents[i].to(torch_device)
+    #     latents[i] = latents[i] * scheduler.init_noise_sigma
+
     # Loop
     with autocast("cuda"):
-        for j in range(0, 1):
+        for j in range(0, 4):
             for i, t in tqdm(enumerate(scheduler.timesteps)):
                 # expand the latents if we are doing classifier-free guidance to avoid doing two forward passes
 
@@ -150,25 +168,13 @@ def generateImage(userPrompt, weights):
                 # perform guidance
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                 noise_pred = noise_pred_uncond + guidance_scale * \
-                    (noise_pred_text - noise_pred_uncond)
+                (noise_pred_text - noise_pred_uncond)
 
                 # compute the previous noisy sample x_t -> x_t-1
-                # latents = scheduler.step(noise_pred, i, latents)["prev_sample"] # Diffusers 0.3 and below
+                # latents = scheduler.step(noise_pred, j, latents)["prev_sample"] # Diffusers 0.3 and below
 
                 latents[j] = scheduler.step(
                     noise_pred, t, latents[j]).prev_sample
-                
-                sample = 1 / 0.18215 * latents[j]
-                with torch.no_grad():
-                    image = vae.decode(sample).sample
-
-                image = (image / 2 + 0.5).clamp(0, 1)
-                image = image.detach().cpu().permute(0, 2, 3, 1).numpy()
-                images = (image * 255).round().astype("uint8")
-                pil_images = [Image.fromarray(image) for image in images]
-                image = pil_images[0].convert('RGB')
-
-                st.image(image)
 
     # scale and decode the image latents with vae
     for j in range(0, 4):
@@ -183,18 +189,31 @@ def generateImage(userPrompt, weights):
         pil_images = [Image.fromarray(image) for image in images]
         image = pil_images[0].convert('RGB')
 
+        st.write("Image " + str(j + 1))
         st.image(image)
-        if(st.button("Select Image " + str(j))):
-           weightsArray[i] += randomNum
-           generateImage(userPrompt, weightsArray)
+        
 
-    del vae, tokenizer, text_encoder, unet, scheduler
-
+    for j in range(0,4):
+        if(st.button("Choose Image " + str(j + 1))):
+            del vae, tokenizer, text_encoder, unet, scheduler
+            torch.cuda.empty_cache()
+            st.empty()
+            st.write("User Prompt: " + str(userPrompt))
+            return newWeightsLists[j]
+        
+    while(True):
+        continue
+        
 
 def main():
     userInput = st.text_input("Enter your prompt")
-    if(st.button("sumbit prompt")):
-        generateImage(userInput, [0, 0, 0, 0])
+    weights = [1.0, 1.0, 1.0, 1.0]
+    if(st.button("submit prompt")):
+        while(True):
+            weights = generateImage(userInput, weights)
+            
+            
+
 
 
 main()
