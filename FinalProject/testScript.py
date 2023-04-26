@@ -26,6 +26,9 @@ logging.set_verbosity_error()
 # Set device
 torch_device = "cuda" if torch.cuda.is_available() else "cpu"
 
+if 'WEIGHTS' not in st.session_state:
+    st.session_state['WEIGHTS'] = [1.0, 1.0, 1.0, 1.0]
+
 @st.cache_resource
 def loadModel():
     vae = AutoencoderKL.from_pretrained(
@@ -72,11 +75,11 @@ def softmax(x):
         x[i] /= sum
     return x
 
+def updateWeights(x):
+    st.session_state['WEIGHTS'] = st.session_state['LISTS'][x]
 
 def generateImage(userPrompt, weights):
     vae, tokenizer, text_encoder, unet, scheduler = loadModel()
-
-    st.write(weights)
 
     prompt = userPrompt
     height = 512                        # default height of Stable Diffusion
@@ -104,14 +107,11 @@ def generateImage(userPrompt, weights):
     scheduler.set_timesteps(num_inference_steps)
 
     # Prep latents
-    weightsArray = weights
     randomNum = random.random() / 5 + 0.20
     latentsArray = [createLatents(math.pow(2,5 + i), batch_size, height, width, scheduler, unet) for i in range(4)]
     
     newWeights = torch.tensor([weights[0]+randomNum, weights[1], weights[2], weights[3]])
     newWeights /= torch.linalg.norm(newWeights)
-
-    
 
     newWeights1 = torch.tensor([weights[0], weights[1]+randomNum, weights[2], weights[3]])
     newWeights1 /= torch.linalg.norm(newWeights1)
@@ -130,6 +130,7 @@ def generateImage(userPrompt, weights):
     newWeightsAsList3 = [weights[0], weights[1], weights[2], weights[3]+randomNum]
 
     newWeightsLists = [newWeightsAsList, newWeightsAsList1, newWeightsAsList2, newWeightsAsList3]
+    st.session_state['LISTS'] = newWeightsLists
 
     latents = [0, 0, 0, 0]
     for i in range(0,4):
@@ -191,26 +192,23 @@ def generateImage(userPrompt, weights):
 
         st.write("Image " + str(j + 1))
         st.image(image)
-        
+        del image
 
-    for j in range(0,4):
-        if(st.button("Choose Image " + str(j + 1))):
-            del vae, tokenizer, text_encoder, unet, scheduler
-            torch.cuda.empty_cache()
-            st.empty()
-            st.write("User Prompt: " + str(userPrompt))
-            return newWeightsLists[j]
+    
         
-    while(True):
-        continue
-        
-
 def main():
     userInput = st.text_input("Enter your prompt")
-    weights = [1.0, 1.0, 1.0, 1.0]
-    if(st.button("submit prompt")):
-        while(True):
-            weights = generateImage(userInput, weights)
+    
+    if(st.button("Submit")):
+        print(st.session_state['WEIGHTS'])
+        generateImage(userInput, st.session_state['WEIGHTS'])
+        
+    if(st.button("Reset")):
+        st.session_state['WEIGHTS'] = [1.0, 1.0, 1.0, 1.0]
+
+    favorite = st.radio("Favorite image", (1, 2, 3, 4))
+    if favorite and st.button("Iterate"):
+        updateWeights(favorite - 1)
             
             
 
