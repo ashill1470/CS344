@@ -26,6 +26,9 @@ logging.set_verbosity_error()
 # Set device
 torch_device = "cuda" if torch.cuda.is_available() else "cpu"
 
+col1, col2, col3, col4 = st.columns(4)
+columns = [col1, col2, col3, col4]
+
 if 'WEIGHTS' not in st.session_state:
     st.session_state['WEIGHTS'] = [1.0, 1.0, 1.0, 1.0]
 
@@ -189,9 +192,9 @@ def generateImage(userPrompt, weights):
         images = (image * 255).round().astype("uint8")
         pil_images = [Image.fromarray(image) for image in images]
         image = pil_images[0].convert('RGB')
-
-        st.write("Image " + str(j + 1))
-        st.image(image)
+        with columns[j]:
+            st.write("Image " + str(j + 1))
+            st.image(image)
         del image
 
     
@@ -206,7 +209,7 @@ def main():
     if(st.button("Reset")):
         st.session_state['WEIGHTS'] = [1.0, 1.0, 1.0, 1.0]
 
-    favorite = st.radio("Favorite image", (1, 2, 3, 4))
+    favorite = st.radio("Favorite image", (1, 2, 3, 4), horizontal=True)
     if favorite and st.button("Iterate"):
         updateWeights(favorite - 1)
             
